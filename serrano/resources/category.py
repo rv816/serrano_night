@@ -1,15 +1,39 @@
 import logging
+import functools
 from django.conf.urls import patterns, url
+from django.core.urlresolvers import reverse
 from preserialize.serialize import serialize
 from restlib2.params import Parametizer, BoolParam
 from avocado.events import usage
 from avocado.models import DataCategory
 from .base import ThrottledResource, SAFE_METHODS
-from ..links import reverse_tmpl
 from . import templates
 
 can_change_category = lambda u: u.has_perm('avocado.change_datacategory')
 log = logging.getLogger(__name__)
+
+
+def category_posthook(instance, data, request):
+    """Category serialization post-hook for augmenting per-instance data.
+
+    The only two arguments the post-hook takes is instance and data. The
+    remaining arguments must be partially applied using `functools.partial`
+    during the request/response cycle.
+    """
+    uri = request.build_absolute_uri
+
+    data['_links'] = {
+        'self': {
+            'href': uri(reverse('serrano:category', args=[instance.pk])),
+        },
+    }
+
+    if data['parent_id']:
+        data['_links']['parent'] = {
+            'href': uri(reverse('serrano:category', args=[data['parent_id']])),
+        }
+
+    return data
 
 
 class CategoryParametizer(Parametizer):
@@ -27,29 +51,15 @@ class CategoryBase(ThrottledResource):
 
     parametizer = CategoryParametizer
 
-    def get_link_templates(self, request):
-        uri = request.build_absolute_uri
-
-        templates = {
-            'self': reverse_tmpl(
-                uri, 'serrano:category', {'pk': (int, 'id')}),
-            'parent': reverse_tmpl(
-                uri, 'serrano:category', {'pk': (int, 'parent_id')}),
-        }
-
-        return templates
-
-    def get_queryset(self, request, params):
+    def get_queryset(self, request):
         queryset = self.model.objects.all()
-
-        if params.get('unpublished') and can_change_category(request.user):
-            return queryset
-
-        return queryset.published()
+        if not can_change_category(request.user):
+            queryset = queryset.published()
+        return queryset
 
     def get_object(self, request, **kwargs):
         if not hasattr(request, 'instance'):
-            queryset = self.get_queryset(request, self.get_params(request))
+            queryset = self.get_queryset(request)
 
             try:
                 instance = queryset.get(**kwargs)
@@ -61,7 +71,8 @@ class CategoryBase(ThrottledResource):
         return request.instance
 
     def prepare(self, request, objects, template=None, **params):
-        return serialize(objects, **self.template)
+        posthook = functools.partial(category_posthook, request=request)
+        return serialize(objects, posthook=posthook, **self.template)
 
     def is_forbidden(self, request, response, *args, **kwargs):
         "Ensure non-privileged users cannot make any changes."
@@ -88,7 +99,13 @@ class CategoriesResource(CategoryBase):
 
     def get(self, request, pk=None):
         params = self.get_params(request)
-        queryset = self.get_queryset(request, params)
+
+        queryset = self.get_queryset(request)
+
+        # For privileged users, check if any filters are applied, otherwise
+        # only allow for published objects.
+        if not can_change_category(request.user) or not params['unpublished']:
+            queryset = queryset.published()
 
         return self.prepare(request, queryset, **params)
 

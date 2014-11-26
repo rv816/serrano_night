@@ -1,25 +1,20 @@
-from __future__ import unicode_literals
-
 import functools
 import logging
 from datetime import datetime
 from django.conf.urls import patterns, url
+from django.core.urlresolvers import reverse
 from django.db.models import Q
 from django.views.decorators.cache import never_cache
 from restlib2.http import codes
-from restlib2.params import Parametizer, StrParam
 from preserialize.serialize import serialize
-from modeltree.tree import trees, MODELTREE_DEFAULT_ALIAS
-from avocado.events import usage
 from avocado.models import DataQuery
-from avocado.query import pipeline
+from avocado.events import usage
 from serrano import utils
 from serrano.forms import QueryForm
 from .base import ThrottledResource
 from .history import RevisionsResource, ObjectRevisionsResource, \
     ObjectRevisionResource
 from . import templates
-from ..links import reverse_tmpl
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +25,19 @@ DELETE_QUERY_EMAIL_BODY = """The query named '{0}' has been deleted. You are
 
 
 def query_posthook(instance, data, request):
+    uri = request.build_absolute_uri
+    data['_links'] = {
+        'self': {
+            'href': uri(reverse('serrano:queries:single', args=[instance.pk])),
+        },
+        'forks': {
+            'href': uri(reverse('serrano:queries:forks', args=[instance.pk])),
+        },
+        'stats': {
+            'href': uri(reverse('serrano:queries:stats', args=[instance.pk])),
+        }
+    }
+
     if getattr(instance, 'user', None) and instance.user.is_authenticated():
         data['is_owner'] = instance.user == request.user
     else:
@@ -41,9 +49,19 @@ def query_posthook(instance, data, request):
     return data
 
 
-class QueryParametizer(Parametizer):
-    tree = StrParam(MODELTREE_DEFAULT_ALIAS, choices=trees)
-    processor = StrParam('default', choices=pipeline.query_processors)
+def forked_query_posthook(instance, data, request):
+    uri = request.build_absolute_uri
+    data['_links'] = {
+        'self': {
+            'href': uri(reverse('serrano:queries:single', args=[instance.pk])),
+        },
+        'parent': {
+            'href': uri(reverse('serrano:queries:single',
+                        args=[instance.parent.pk])),
+        }
+    }
+
+    return data
 
 
 class QueryBase(ThrottledResource):
@@ -53,25 +71,11 @@ class QueryBase(ThrottledResource):
     model = DataQuery
     template = templates.Query
 
-    parametizer = QueryParametizer
-
     def prepare(self, request, instance, template=None):
         if template is None:
             template = self.template
         posthook = functools.partial(query_posthook, request=request)
         return serialize(instance, posthook=posthook, **template)
-
-    def get_link_templates(self, request):
-        uri = request.build_absolute_uri
-
-        return {
-            'self': reverse_tmpl(
-                uri, 'serrano:queries:single', {'pk': (int, 'id')}),
-            'forks': reverse_tmpl(
-                uri, 'serrano:queries:forks', {'pk': (int, 'id')}),
-            'stats': reverse_tmpl(
-                uri, 'serrano:queries:stats', {'pk': (int, 'id')}),
-        }
 
     def get_queryset(self, request, **kwargs):
         "Constructs a QuerySet for this user or session."
@@ -158,16 +162,6 @@ class QueryForksResource(QueryBase):
     def is_not_found(self, request, response, **kwargs):
         return self.get_object(request, **kwargs) is None
 
-    def get_link_templates(self, request):
-        uri = request.build_absolute_uri
-
-        return {
-            'self': reverse_tmpl(
-                uri, 'serrano:queries:single', {'pk': (int, 'id')}),
-            'parent': reverse_tmpl(
-                uri, 'serrano:queries:single', {'pk': (int, 'parent_id')}),
-        }
-
     def get_queryset(self, request, **kwargs):
         instance = self.get_object(request, **kwargs)
         return self.model.objects.filter(parent=instance.pk)
@@ -190,7 +184,8 @@ class QueryForksResource(QueryBase):
         if template is None:
             template = self.template
 
-        return serialize(instance, **template)
+        posthook = functools.partial(forked_query_posthook, request=request)
+        return serialize(instance, posthook=posthook, **template)
 
     def _requestor_can_get_forks(self, request, instance):
         """
@@ -338,16 +333,11 @@ class QueryStatsResource(QueryBase):
         return self.get_object(request, **kwargs) is None
 
     def get(self, request, **kwargs):
-        params = self.get_params(request)
         instance = self.get_object(request, **kwargs)
 
-        QueryProcessor = pipeline.query_processors[params['processor']]
-        processor = QueryProcessor(tree=params['tree'])
-        queryset = processor.get_queryset(request=request)
-
         return {
-            'distinct_count': instance.context.count(queryset=queryset),
-            'record_count': instance.count(queryset=queryset)
+            'distinct_count': instance.context.apply().distinct().count(),
+            'record_count': instance.apply().count()
         }
 
 

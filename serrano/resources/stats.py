@@ -1,33 +1,31 @@
 from django.core.urlresolvers import reverse
-from django.core.cache import cache
 from django.conf.urls import patterns, url
 from django.views.decorators.cache import never_cache
 from restlib2.params import Parametizer, BoolParam, StrParam
 from avocado.models import DataContext, DataField
 from avocado.query import pipeline
-from avocado.core.cache import cache_key
-from avocado.core.cache.model import NEVER_EXPIRE
 from .base import BaseResource, ThrottledResource
 
 
 class StatsResource(BaseResource):
-    def get_links(self, request):
+    def get(self, request):
         uri = request.build_absolute_uri
 
         return {
-            'self': uri(reverse('serrano:stats:root')),
-            'counts': uri(reverse('serrano:stats:counts'))
-        }
-
-    def get(self, request):
-        return {
             'title': 'Serrano Stats Endpoint',
+            '_links': {
+                'self': {
+                    'href': uri(reverse('serrano:stats:root')),
+                },
+                'counts': {
+                    'href': uri(reverse('serrano:stats:counts')),
+                },
+            }
         }
 
 
 class CountStatsParametizer(Parametizer):
     aware = BoolParam(False)
-    refresh = BoolParam(False)
     processor = StrParam('default', choices=pipeline.query_processors)
 
 
@@ -66,6 +64,7 @@ class CountStatsResource(ThrottledResource):
             # the parameter.
             processor = QueryProcessor(context=context, tree=model)
             queryset = processor.get_queryset(request=request)
+            count = queryset.values('pk').distinct().count()
 
             opts = model._meta
 
@@ -80,19 +79,6 @@ class CountStatsResource(ThrottledResource):
 
             if verbose_name_plural.islower():
                 verbose_name_plural = verbose_name_plural.title()
-
-            # Get count from cache or database
-            label = ':'.join([opts.app_label, opts.module_name, 'count'])
-            key = cache_key(label, kwargs={'queryset': queryset})
-
-            if params['refresh']:
-                count = None
-            else:
-                count = cache.get(key)
-
-            if count is None:
-                count = queryset.values('pk').distinct().count()
-                cache.set(key, count, timeout=NEVER_EXPIRE)
 
             data.append({
                 'count': count,

@@ -1,14 +1,13 @@
 import logging
-from django.core.urlresolvers import reverse
 from django.db.models import Q
+from django.core.urlresolvers import reverse
 from django.utils.encoding import smart_unicode
 from restlib2.http import codes
 from restlib2.params import StrParam, IntParam, BoolParam
 from avocado.events import usage
 from avocado.query import pipeline
-from .base import FieldBase, is_field_orphaned
 from ..pagination import PaginatorResource, PaginatorParametizer
-from ...links import patch_response, reverse_tmpl
+from .base import FieldBase
 
 
 log = logging.getLogger(__name__)
@@ -86,24 +85,8 @@ class FieldValues(FieldBase, PaginatorResource):
 
         return results
 
-    def get_link_templates(self, request):
-        uri = request.build_absolute_uri
-
-        return {
-            'parent': reverse_tmpl(
-                uri, 'serrano:field', {'pk': (int, 'parent_id')})
-        }
-
     def get(self, request, pk):
         instance = self.get_object(request, pk=pk)
-
-        if is_field_orphaned(instance):
-            data = {
-                'message': 'Orphaned fields do not support values calls.'
-            }
-            return self.render(
-                request, data, status=codes.unprocessable_entity)
-
         params = self.get_params(request)
 
         if params['aware']:
@@ -131,7 +114,7 @@ class FieldValues(FieldBase, PaginatorResource):
 
         # If a query term is supplied, perform the icontains search.
         if params['query']:
-            usage.log('items', instance=instance, request=request, data={
+            usage.log('values', instance=instance, request=request, data={
                 'query': params['query'],
             })
             values = self.get_search_values(
@@ -147,19 +130,22 @@ class FieldValues(FieldBase, PaginatorResource):
         page = paginator.page(page)
 
         # Get paginator-based response.
-        data = self.get_page_response(request, paginator, page)
-
-        data.update({
-            'items': page.object_list,
-        })
+        resp = self.get_page_response(request, paginator, page)
 
         # Add links.
         path = reverse('serrano:field-values', kwargs={'pk': pk})
-        links = self.get_page_links(request, path, page, extra=params)
-        templates = self.get_link_templates(request)
-        response = self.render(request, content=data)
 
-        return patch_response(request, response, links, templates)
+        links = self.get_page_links(request, path, page, extra=params)
+        links['parent'] = {
+            'href': request.build_absolute_uri(reverse('serrano:field',
+                                               kwargs={'pk': pk})),
+        }
+        resp.update({
+            '_links': links,
+            'values': page.object_list,
+        })
+
+        return resp
 
     def post(self, request, pk):
         instance = self.get_object(request, pk=pk)

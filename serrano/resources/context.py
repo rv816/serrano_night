@@ -2,11 +2,12 @@ import functools
 import logging
 from datetime import datetime
 from django.conf.urls import patterns, url
+from django.core.urlresolvers import reverse
 from django.views.decorators.cache import never_cache
 from restlib2.http import codes
 from restlib2.params import Parametizer, StrParam
 from preserialize.serialize import serialize
-from modeltree.tree import trees, MODELTREE_DEFAULT_ALIAS
+from modeltree.tree import MODELTREE_DEFAULT_ALIAS, trees
 from avocado.events import usage
 from avocado.models import DataContext
 from avocado.query import pipeline
@@ -14,17 +15,27 @@ from serrano.forms import ContextForm
 from .base import ThrottledResource
 from .history import RevisionsResource, ObjectRevisionsResource, \
     ObjectRevisionResource
-from ..links import reverse_tmpl
 from . import templates
 
 log = logging.getLogger(__name__)
 
 
 def context_posthook(instance, data, request, tree):
+    uri = request.build_absolute_uri
+
     opts = tree.root_model._meta
     data['object_name'] = opts.verbose_name.format()
     data['object_name_plural'] = opts.verbose_name_plural.format()
 
+    data['_links'] = {
+        'self': {
+            'href': uri(
+                reverse('serrano:contexts:single', args=[instance.pk])),
+        },
+        'stats': {
+            'href': uri(reverse('serrano:contexts:stats', args=[instance.pk])),
+        }
+    }
     return data
 
 
@@ -42,23 +53,13 @@ class ContextBase(ThrottledResource):
 
     parametizer = ContextParametizer
 
-    def get_link_templates(self, request):
-        uri = request.build_absolute_uri
-
-        return {
-            'self': reverse_tmpl(
-                uri, 'serrano:contexts:single', {'pk': (int, 'id')}),
-            'stats': reverse_tmpl(
-                uri, 'serrano:contexts:stats', {'pk': (int, 'id')}),
-        }
-
     def prepare(self, request, instance, tree, template=None):
         if template is None:
             template = self.template
 
         tree = trees[tree]
-        posthook = functools.partial(context_posthook, request=request,
-                                     tree=tree)
+        posthook = functools.partial(
+            context_posthook, request=request, tree=tree)
         return serialize(instance, posthook=posthook, **template)
 
     def get_queryset(self, request, **kwargs):
@@ -130,7 +131,11 @@ class ContextsResource(ContextBase):
 
     def post(self, request):
         params = self.get_params(request)
-        form = ContextForm(request, request.data)
+        tree = params['tree']
+        processor = params['processor']
+
+        form = ContextForm(
+            request, request.data, processor=processor, tree=tree)
 
         if form.is_valid():
             instance = form.save()
@@ -138,7 +143,7 @@ class ContextsResource(ContextBase):
 
             request.session.modified = True
 
-            data = self.prepare(request, instance, tree=params['tree'])
+            data = self.prepare(request, instance, tree=tree)
             return self.render(request, data, status=codes.created)
 
         data = {
@@ -146,9 +151,7 @@ class ContextsResource(ContextBase):
             'errors': dict(form.errors),
         }
 
-        response = self.render(request, data,
-                               status=codes.unprocessable_entity)
-        return response
+        return self.render(request, data, status=codes.unprocessable_entity)
 
 
 class ContextResource(ContextBase):
@@ -170,9 +173,13 @@ class ContextResource(ContextBase):
 
     def put(self, request, **kwargs):
         params = self.get_params(request)
+        tree = params['tree']
+        processor = params['processor']
+
         instance = self.get_object(request, **kwargs)
 
-        form = ContextForm(request, request.data, instance=instance)
+        form = ContextForm(request, request.data, instance=instance,
+                           processor=processor, tree=tree)
 
         if form.is_valid():
             instance = form.save()
@@ -187,9 +194,7 @@ class ContextResource(ContextBase):
             'message': 'Error updating context',
             'errors': dict(form.errors),
         }
-        response = self.render(request, data,
-                               status=codes.unprocessable_entity)
-        return response
+        return self.render(request, data, status=codes.unprocessable_entity)
 
     def delete(self, request, **kwargs):
         instance = self.get_object(request, **kwargs)
@@ -211,15 +216,10 @@ class ContextStatsResource(ContextBase):
         return self.get_object(request, **kwargs) is None
 
     def get(self, request, **kwargs):
-        params = self.get_params(request)
         instance = self.get_object(request, **kwargs)
 
-        QueryProcessor = pipeline.query_processors[params['processor']]
-        processor = QueryProcessor(tree=params['tree'])
-        queryset = processor.get_queryset(request=request)
-
         return {
-            'count': instance.count(queryset=queryset)
+            'count': instance.apply().distinct().count()
         }
 
 

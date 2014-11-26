@@ -1,11 +1,10 @@
 import logging
-from restlib2.http import codes
+from django.core.urlresolvers import reverse
 from restlib2.params import Parametizer, BoolParam, StrParam
 from avocado.events import usage
 from avocado.query import pipeline
-from serrano.conf import settings
 from .base import FieldBase
-from ...links import reverse_tmpl
+
 
 log = logging.getLogger(__name__)
 
@@ -20,26 +19,9 @@ class FieldStats(FieldBase):
 
     parametizer = FieldStatsParametizer
 
-    def get_link_templates(self, request):
-        uri = request.build_absolute_uri
-
-        return {
-            'self': reverse_tmpl(
-                uri, 'serrano:field-stats', {'pk': (int, 'id')}),
-            'parent': reverse_tmpl(
-                uri, 'serrano:field', {'pk': (int, 'parent_id')}),
-        }
-
     def get(self, request, pk):
+        uri = request.build_absolute_uri
         instance = self.get_object(request, pk=pk)
-
-        stats_capable = settings.STATS_CAPABLE
-        if stats_capable and not stats_capable(instance):
-            data = {
-                'message': 'This field does not support stats reporting.'
-            }
-            return self.render(
-                request, data, status=codes.unprocessable_entity)
 
         params = self.get_params(request)
 
@@ -53,22 +35,40 @@ class FieldStats(FieldBase):
         queryset = processor.get_queryset(request=request)
 
         if instance.simple_type == 'number':
-            resp = {
-                'max': instance.max(queryset=queryset),
-                'min': instance.min(queryset=queryset),
-                'avg': instance.avg(queryset=queryset)
-            }
+            # Since the call to max() returns an Aggregator object with the
+            # queryset stored internally, we don't pass the queryset to min()
+            # or avg() like we do when we call max() which is called on the
+            # instance itself not on an Aggregator like min() or avg() are
+            # called on.
+            stats = instance.max(queryset=queryset).min().avg()
         elif (instance.simple_type == 'date' or
               instance.simple_type == 'time' or
               instance.simple_type == 'datetime'):
-            resp = {
-                'max': instance.max(queryset=queryset),
-                'min': instance.min(queryset=queryset)
-            }
+            # Since the call to max() returns an Aggregator object with the
+            # queryset stored internally, we don't pass the queryset to min()
+            # like we do when we call max() which is called on the instance
+            # itself not on an Aggregator like min() is called on.
+            stats = instance.max(queryset=queryset).min()
         else:
-            resp = {
-                'count': instance.count(queryset=queryset, distinct=True)
-            }
+            stats = instance.count(queryset=queryset, distinct=True)
+
+        if stats is None:
+            resp = {}
+        else:
+            try:
+                resp = next(iter(stats))
+            except StopIteration:
+                resp = {}
+
+        resp['_links'] = {
+            'self': {
+                'href': uri(
+                    reverse('serrano:field-stats', args=[instance.pk])),
+            },
+            'parent': {
+                'href': uri(reverse('serrano:field', args=[instance.pk])),
+            },
+        }
 
         usage.log('stats', instance=instance, request=request)
         return resp

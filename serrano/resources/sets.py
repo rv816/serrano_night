@@ -114,24 +114,18 @@ for config in settings.OBJECT_SETS:
 class SetsRootResource(BaseResource):
     object_set_options = tuple(object_set_options)
 
-    def get_links(self, request):
-        uri = request.build_absolute_uri
-
-        links = {}
-        for options in self.object_set_options:
-            reverses = options['url_reverse_names']
-
-            options['label'] = uri(reverse(reverses['sets']))
-
-        return links
-
     def get(self, request):
-
+        uri = request.build_absolute_uri
         data = []
 
         for options in self.object_set_options:
+            reverses = options['url_reverse_names']
+
             data.append({
                 'label': options['label'],
+                '_links': {
+                    'self': uri(reverse(reverses['sets'])),
+                }
             })
 
         return data

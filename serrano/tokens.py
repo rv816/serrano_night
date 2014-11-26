@@ -109,7 +109,10 @@ class TokenGenerator(object):
 
 token_generator = TokenGenerator()
 
+from django.views.decorators.cache import cache_page
+from django.views.decorators.csrf import csrf_protect
 
+@csrf_protect
 def get_request_token(request):
     "Attempts to retrieve a token from the request."
     if 'token' in request.REQUEST:

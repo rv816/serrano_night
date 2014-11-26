@@ -22,34 +22,58 @@ class Root(BaseResource):
         if request.method != 'POST':
             return super(Root, self).is_unauthorized(request, *args, **kwargs)
 
-    def get_links(self, request):
+    def get(self, request):
         uri = request.build_absolute_uri
 
-        links = {
-            'self': uri(reverse('serrano:root')),
-            'categories': uri(reverse('serrano:categories')),
-            'fields': uri(reverse('serrano:fields')),
-            'concepts': uri(reverse('serrano:concepts')),
-            'contexts': uri(reverse('serrano:contexts:active')),
-            'views': uri(reverse('serrano:views:active')),
-            'queries': uri(reverse('serrano:queries:active')),
-            'public_queries': uri(reverse('serrano:queries:public')),
-            'preview': uri(reverse('serrano:data:preview')),
-            'exporter': uri(reverse('serrano:data:exporter')),
-            'ping': uri(reverse('serrano:ping')),
-            'stats': uri(reverse('serrano:stats:root')),
+        data = {
+            'title': 'Serrano Hypermedia API',
+            'version': API_VERSION,
+            '_links': {
+                'self': {
+                    'href': uri(reverse('serrano:root')),
+                },
+                'categories': {
+                    'href': uri(reverse('serrano:categories')),
+                },
+                'fields': {
+                    'href': uri(reverse('serrano:fields')),
+                },
+                'concepts': {
+                    'href': uri(reverse('serrano:concepts')),
+                },
+                'contexts': {
+                    'href': uri(reverse('serrano:contexts:active')),
+                },
+                'views': {
+                    'href': uri(reverse('serrano:views:active')),
+                },
+                'queries': {
+                    'href': uri(reverse('serrano:queries:active')),
+                },
+                'public_queries': {
+                    'href': uri(reverse('serrano:queries:public')),
+                },
+                'preview': {
+                    'href': uri(reverse('serrano:data:preview')),
+                },
+                'exporter': {
+                    'href': uri(reverse('serrano:data:exporter')),
+                },
+                'ping': {
+                    'href': uri(reverse('serrano:ping')),
+                },
+                'stats': {
+                    'href': uri(reverse('serrano:stats:root')),
+                },
+            }
         }
 
         if dep_supported('objectset'):
-            links['sets'] = uri(reverse('serrano:sets:root'))
+            data['_links']['sets'] = {
+                'href': uri(reverse('serrano:sets:root')),
+            }
 
-        return links
-
-    def get(self, request):
-        return {
-            'title': 'Serrano Hypermedia API',
-            'version': API_VERSION,
-        }
+        return data
 
     def post(self, request):
         username = request.data.get('username')
